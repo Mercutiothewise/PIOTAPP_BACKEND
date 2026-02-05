@@ -11,23 +11,40 @@ const PORT = process.env.PORT || 3001;
 // Database file path
 const DB_FILE = path.join(__dirname, 'tickets.json');
 
+// In-memory database fallback (for platforms without persistent storage)
+let memoryDB = { tickets: [] };
+
 // Initialize database
 function initDatabase() {
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ tickets: [] }, null, 2));
+  try {
+    if (!fs.existsSync(DB_FILE)) {
+      fs.writeFileSync(DB_FILE, JSON.stringify({ tickets: [] }, null, 2));
+    }
+  } catch (err) {
+    console.log('Using in-memory database (filesystem not writable)');
   }
 }
 
 // Read database
 function readDB() {
-  initDatabase();
-  const data = fs.readFileSync(DB_FILE, 'utf8');
-  return JSON.parse(data);
+  try {
+    initDatabase();
+    const data = fs.readFileSync(DB_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.log('Using in-memory database');
+    return memoryDB;
+  }
 }
 
 // Write database
 function writeDB(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.log('Saving to in-memory database');
+    memoryDB = data;
+  }
 }
 
 // Get base URL for links in emails
