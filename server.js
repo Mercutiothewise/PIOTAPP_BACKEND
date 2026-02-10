@@ -89,7 +89,18 @@ app.get('/', (req, res) => {
 // Submit ticket endpoint
 app.post('/api/submit-ticket', async (req, res) => {
   try {
-    const { ticketNumber, userName, userEmail, companyName, issue, priority } = req.body;
+    const {
+      ticketNumber,
+      userName,
+      userEmail,
+      userPhone,
+      companyName,
+      issue,
+      priority,
+      contactPreference,
+      scheduledTime,
+      anyDeskId,
+    } = req.body;
 
     // Validate required fields
     if (!ticketNumber || !userName || !userEmail || !issue) {
@@ -106,12 +117,17 @@ app.post('/api/submit-ticket', async (req, res) => {
       ticketNumber,
       userName,
       userEmail,
+      userPhone: userPhone || 'N/A',
+      anyDeskId: anyDeskId || 'N/A',
       companyName: companyName || 'N/A',
       issue,
       priority: priority || 'Medium',
+      contactPreference: contactPreference || 'asap',
+      scheduledTime: scheduledTime || '',
       status: 'Open',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      comments: [],
     };
     
     db.tickets.push(newTicket);
@@ -128,8 +144,11 @@ app.post('/api/submit-ticket', async (req, res) => {
         <h2>New Support Ticket Received</h2>
         <p><strong>Ticket Number:</strong> ${ticketNumber}</p>
         <p><strong>User:</strong> ${userName} (${userEmail})</p>
+        <p><strong>Phone:</strong> ${userPhone || 'N/A'}</p>
+        <p><strong>AnyDesk ID:</strong> ${anyDeskId || 'N/A'}</p>
         <p><strong>Company:</strong> ${companyName || 'N/A'}</p>
         <p><strong>Priority:</strong> ${priority}</p>
+        <p><strong>Preferred Contact:</strong> ${contactPreference || 'asap'} ${scheduledTime ? `(${scheduledTime})` : ''}</p>
         <p><strong>Issue:</strong></p>
         <p>${issue}</p>
         <hr>
@@ -268,10 +287,22 @@ app.get('/update/:ticketId', (req, res) => {
           <p><strong>Ticket #:</strong> ${ticket.ticketNumber}</p>
           <p><strong>User:</strong> ${ticket.userName}</p>
           <p><strong>Email:</strong> ${ticket.userEmail}</p>
+          <p><strong>Phone:</strong> ${ticket.userPhone || 'N/A'}</p>
+          <p><strong>AnyDesk ID:</strong> ${ticket.anyDeskId || 'N/A'}</p>
           <p><strong>Company:</strong> ${ticket.companyName}</p>
           <p><strong>Priority:</strong> ${ticket.priority}</p>
+          <p><strong>Preferred Contact:</strong> ${ticket.contactPreference || 'asap'} ${ticket.scheduledTime ? `(${ticket.scheduledTime})` : ''}</p>
           <p><strong>Current Status:</strong> ${ticket.status}</p>
           <p><strong>Issue:</strong> ${ticket.issue}</p>
+        </div>
+
+        <div class="ticket-info">
+          <p><strong>Comments:</strong></p>
+          ${(ticket.comments || []).length === 0
+            ? '<p>No comments yet.</p>'
+            : (ticket.comments || []).map(c => `
+                <p><strong>${c.author || 'Support'}:</strong> ${c.text} <em>(${new Date(c.createdAt).toLocaleString()})</em></p>
+              `).join('')}
         </div>
         
         <form action="/update/${ticketId}" method="POST">
@@ -320,6 +351,13 @@ app.post('/update/:ticketId', async (req, res) => {
     db.tickets[ticketIndex].updatedAt = new Date().toISOString();
     if (notes) {
       db.tickets[ticketIndex].notes = notes;
+      const existingComments = db.tickets[ticketIndex].comments || [];
+      existingComments.push({
+        text: notes,
+        author: 'Support',
+        createdAt: new Date().toISOString(),
+      });
+      db.tickets[ticketIndex].comments = existingComments;
     }
     writeDB(db);
 
