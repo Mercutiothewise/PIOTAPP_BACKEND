@@ -3,10 +3,18 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
 const { Resend } = require('resend');
+const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Supabase (optional)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+  : null;
 
 // Database file path
 const DB_FILE = path.join(__dirname, 'tickets.json');
@@ -50,6 +58,68 @@ function writeDB(data) {
 // Get base URL for links in emails
 function getBaseUrl() {
   return process.env.BASE_URL || `http://localhost:${PORT}`;
+}
+
+function mapStatusToSupabase(status) {
+  const normalized = (status || '').toLowerCase();
+  if (normalized === 'open') return 'submitted';
+  if (normalized === 'in progress') return 'in_progress';
+  if (normalized === 'resolved') return 'completed';
+  if (normalized === 'closed') return 'closed';
+  return 'submitted';
+}
+
+function mapStatusFromSupabase(status) {
+  const normalized = (status || '').toLowerCase();
+  if (normalized === 'submitted') return 'Open';
+  if (normalized === 'assigned') return 'In Progress';
+  if (normalized === 'in_progress') return 'In Progress';
+  if (normalized === 'completed') return 'Resolved';
+  if (normalized === 'closed') return 'Closed';
+  return 'Open';
+}
+
+async function getTicketFromSupabase(ticketId) {
+  if (!supabase) return null;
+
+  const { data: ticket, error } = await supabase
+    .from('tickets')
+    .select(`
+      *,
+      user:profiles(*),
+      company:companies(name)
+    `)
+    .eq('ticket_number', ticketId)
+    .single();
+
+  if (error || !ticket) return null;
+
+  const { data: comments } = await supabase
+    .from('ticket_comments')
+    .select('*')
+    .eq('ticket_id', ticket.id)
+    .order('created_at', { ascending: true });
+
+  return {
+    id: ticket.ticket_number,
+    ticketNumber: ticket.ticket_number,
+    userName: `${ticket.user?.first_name || ''} ${ticket.user?.surname || ''}`.trim(),
+    userEmail: ticket.user?.email || '',
+    userPhone: ticket.user?.phone || 'N/A',
+    anyDeskId: ticket.user?.anydesk_id || 'N/A',
+    companyName: ticket.company?.name || 'N/A',
+    issue: ticket.description || ticket.subject || '',
+    priority: ticket.priority || 'Medium',
+    contactPreference: ticket.contact_preference || 'asap',
+    scheduledTime: ticket.scheduled_time || '',
+    status: mapStatusFromSupabase(ticket.status),
+    comments: (comments || []).map(c => ({
+      text: c.text,
+      author: c.author_name,
+      createdAt: c.created_at,
+    })),
+    _supabaseId: ticket.id,
+  };
 }
 
 // Middleware
@@ -199,10 +269,12 @@ app.get('/api/tickets/:userId', (req, res) => {
 });
 
 // Web form to update ticket status
-app.get('/update/:ticketId', (req, res) => {
+app.get('/update/:ticketId', async (req, res) => {
   const { ticketId } = req.params;
+  const supaTicket = await getTicketFromSupabase(ticketId);
   const db = readDB();
-  const ticket = db.tickets.find(t => t.ticketNumber === ticketId);
+  const localTicket = db.tickets.find(t => t.ticketNumber === ticketId);
+  const ticket = supaTicket || localTicket;
 
   if (!ticket) {
     return res.send(`
@@ -331,10 +403,52 @@ app.post('/update/:ticketId', async (req, res) => {
     const { ticketId } = req.params;
     const { status, notes } = req.body;
 
+    let ticket = null;
+    const supaTicket = await getTicketFromSupabase(ticketId);
+
+    if (supaTicket && supabase) {
+      const supabaseStatus = mapStatusToSupabase(status);
+      await supabase
+        .from('tickets')
+        .update({ status: supabaseStatus, updated_at: new Date().toISOString() })
+        .eq('ticket_number', ticketId);
+
+      if (notes) {
+        await supabase
+          .from('ticket_comments')
+          .insert({
+            ticket_id: supaTicket._supabaseId,
+            author_name: 'Support',
+            text: notes,
+            is_from_user: false,
+          });
+      }
+
+      ticket = supaTicket;
+      ticket.status = status;
+    }
+
+    // Local DB fallback (kept for compatibility)
     const db = readDB();
     const ticketIndex = db.tickets.findIndex(t => t.ticketNumber === ticketId);
+    if (ticketIndex !== -1) {
+      db.tickets[ticketIndex].status = status;
+      db.tickets[ticketIndex].updatedAt = new Date().toISOString();
+      if (notes) {
+        db.tickets[ticketIndex].notes = notes;
+        const existingComments = db.tickets[ticketIndex].comments || [];
+        existingComments.push({
+          text: notes,
+          author: 'Support',
+          createdAt: new Date().toISOString(),
+        });
+        db.tickets[ticketIndex].comments = existingComments;
+      }
+      writeDB(db);
+      if (!ticket) ticket = db.tickets[ticketIndex];
+    }
 
-    if (ticketIndex === -1) {
+    if (!ticket) {
       return res.send(`
         <!DOCTYPE html>
         <html>
@@ -346,23 +460,7 @@ app.post('/update/:ticketId', async (req, res) => {
       `);
     }
 
-    // Update ticket
-    db.tickets[ticketIndex].status = status;
-    db.tickets[ticketIndex].updatedAt = new Date().toISOString();
-    if (notes) {
-      db.tickets[ticketIndex].notes = notes;
-      const existingComments = db.tickets[ticketIndex].comments || [];
-      existingComments.push({
-        text: notes,
-        author: 'Support',
-        createdAt: new Date().toISOString(),
-      });
-      db.tickets[ticketIndex].comments = existingComments;
-    }
-    writeDB(db);
-
     // Send email notification to user
-    const ticket = db.tickets[ticketIndex];
     const mailOptions = {
       to: ticket.userEmail,
       subject: `Ticket Update: ${ticketId} - Status: ${status}`,
