@@ -2,7 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const fs = require('fs');
 
 const app = express();
@@ -57,16 +57,21 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Email transporter configuration
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: process.env.SMTP_PORT || 587,
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+// Resend email client
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+function getFromEmail() {
+  return process.env.RESEND_FROM || process.env.SUPPORT_EMAIL || 'onboarding@resend.dev';
+}
+
+async function sendEmail({ to, subject, html }) {
+  return resend.emails.send({
+    from: getFromEmail(),
+    to,
+    subject,
+    html,
+  });
+}
 
 // Health check endpoint
 app.get('/', (req, res) => {
@@ -117,7 +122,6 @@ app.post('/api/submit-ticket', async (req, res) => {
     const updateLink = `${getBaseUrl()}/update/${ticketNumber}`;
 
     const mailOptions = {
-      from: process.env.SMTP_USER,
       to: supportEmail,
       subject: `New Support Ticket: ${ticketNumber} - ${priority} Priority`,
       html: `
@@ -133,7 +137,7 @@ app.post('/api/submit-ticket', async (req, res) => {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
 
     res.json({ 
       success: true, 
@@ -322,7 +326,6 @@ app.post('/update/:ticketId', async (req, res) => {
     // Send email notification to user
     const ticket = db.tickets[ticketIndex];
     const mailOptions = {
-      from: process.env.SMTP_USER,
       to: ticket.userEmail,
       subject: `Ticket Update: ${ticketId} - Status: ${status}`,
       html: `
@@ -336,7 +339,7 @@ app.post('/update/:ticketId', async (req, res) => {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    await sendEmail(mailOptions);
 
     res.send(`
       <!DOCTYPE html>
