@@ -408,13 +408,27 @@ app.post('/update/:ticketId', async (req, res) => {
 
     if (supaTicket && supabase) {
       const supabaseStatus = mapStatusToSupabase(status);
-      await supabase
+      const { error: updateError } = await supabase
         .from('tickets')
         .update({ status: supabaseStatus, updated_at: new Date().toISOString() })
-        .eq('ticket_number', ticketId);
+        .eq('id', supaTicket._supabaseId);
+
+      if (updateError) {
+        console.error('Supabase update error:', updateError);
+        return res.status(500).send(`
+          <!DOCTYPE html>
+          <html>
+          <head><title>Error</title></head>
+          <body>
+            <h1>Error updating ticket</h1>
+            <p>${updateError.message}</p>
+          </body>
+          </html>
+        `);
+      }
 
       if (notes) {
-        await supabase
+        const { error: commentError } = await supabase
           .from('ticket_comments')
           .insert({
             ticket_id: supaTicket._supabaseId,
@@ -422,6 +436,10 @@ app.post('/update/:ticketId', async (req, res) => {
             text: notes,
             is_from_user: false,
           });
+
+        if (commentError) {
+          console.error('Supabase comment error:', commentError);
+        }
       }
 
       ticket = supaTicket;
